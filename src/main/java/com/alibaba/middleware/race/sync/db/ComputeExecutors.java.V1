@@ -1,0 +1,20 @@
+package com.alibaba.middleware.race.sync.db;
+
+import com.lmax.disruptor.util.DaemonThreadFactory;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * Created by xiyuanbupt on 6/12/17.
+ *
+ */
+public class ComputeExecutors {
+
+    public static final ExecutorService[] EXECUTORS = new ExecutorService[5];
+    static {
+        for(int i = 0; i<5; i++){
+            EXECUTORS[i] = Executors.newFixedThreadPool(2, DaemonThreadFactory.INSTANCE);
+        }
+    }
+}

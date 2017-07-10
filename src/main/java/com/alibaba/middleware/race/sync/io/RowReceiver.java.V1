@@ -1,0 +1,11 @@
+package com.alibaba.middleware.race.sync.io;
+
+/**
+ * Created by xiyuanbupt on 6/12/17.
+ */
+public interface RowReceiver {
+    void setRowIndex(byte fileNum, int off);
+    void inToBuffer(byte[] bytes, int from, int length);
+    void init();
+    int getRowLenghtIncludeSepRow();
+}

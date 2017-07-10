@@ -1,0 +1,66 @@
+package com.alibaba.middleware.race.sync.statistics;
+
+import com.alibaba.middleware.race.sync.Server;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Created by xiyuanbupt on 6/13/17.
+ *
+ */
+public class HandleStatistics {
+
+    public static void statistic(String table, String schema, long star, long end, int concurrentCount){
+        Logger logger = LoggerFactory.getLogger(Server.class);
+        StatisticsV3.initClass(table, schema, star, end);
+        StatisticsV3[] statisticsV3s = new StatisticsV3[concurrentCount];
+        for(int i = 0; i<concurrentCount; i++){
+            statisticsV3s[i] = new StatisticsV3(i);
+        }
+        for(StatisticsV3 statisticsV3:statisticsV3s){
+            statisticsV3.load();
+        }
+        for(StatisticsV3 statisticsV3:statisticsV3s){
+            statisticsV3.waitFinish();
+        }
+        int sep2Min = Integer.MAX_VALUE;
+        int sep2Max = Integer.MIN_VALUE;
+        int sep3Min = Integer.MAX_VALUE;
+        int sep3Max = Integer.MIN_VALUE;
+        int sep4Min = Integer.MAX_VALUE;
+        int sep4Max = Integer.MIN_VALUE;
+        int key_max_len = Integer.MIN_VALUE;
+        long pk_max = Long.MIN_VALUE, pk_min = Long.MAX_VALUE;
+        int i_count = 0,
+                d_count= 0,
+                u_count= 0,
+                up_pri= 0,
+                in_range_up= 0, in_range_delete= 0;
+        for(StatisticsV3 statisticsV3:statisticsV3s){
+            sep2Max = Math.max(sep2Max, statisticsV3.sep2Max);
+            sep2Min = Math.min(sep2Min, statisticsV3.sep2Min);
+            sep3Max = Math.max(sep3Max, statisticsV3.sep3Max);
+            sep3Min = Math.min(sep3Min, statisticsV3.sep3Min);
+            sep4Max = Math.max(sep4Max, statisticsV3.sep4Max);
+            sep4Min = Math.min(sep4Min, statisticsV3.sep4Min);
+            key_max_len = Math.max(key_max_len, statisticsV3.key_max_len);
+            pk_max = Math.max(pk_max, statisticsV3.pk_max);
+            pk_min = Math.min(pk_min, statisticsV3.pk_min);
+            i_count += statisticsV3.i_count;
+            d_count += statisticsV3.d_count;
+            u_count += statisticsV3.u_count;
+            up_pri += statisticsV3.up_pri;
+            in_range_delete += statisticsV3.in_range_delete;
+            in_range_up += statisticsV3.in_range_up;
+        }
+        logger.info("U:{}, I:{}, D:{}, TOTAL:{}, " +
+                "UPPK:{}, IRD:{}, IRU:{} PK_MAX:{}, PK_MIN:{}, SEP2MIN:{}, SEP2MAX:{}, " +
+                "SEP3MIN:{}, SEP3MAX:{}, SEP4MIN:{}, SEP4MAX:{}, strMAX:{}" ,
+                u_count, i_count, d_count,(u_count + i_count + d_count),
+                up_pri,in_range_delete, in_range_up, pk_max, pk_min, sep2Min,sep2Max,
+                sep3Min,
+                sep3Max, sep4Min, sep4Max,key_max_len
+        );
+
+    }
+}

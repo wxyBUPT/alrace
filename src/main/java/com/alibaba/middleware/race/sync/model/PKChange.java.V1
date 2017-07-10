@@ -1,0 +1,15 @@
+package com.alibaba.middleware.race.sync.model;
+
+/**
+ * Created by xiyuanbupt on 6/11/17.
+ */
+public class PKChange {
+
+    public final long from_pk;
+    public final long to_pk;
+
+    public PKChange(long from_pk, long to_pk) {
+        this.from_pk = from_pk;
+        this.to_pk = to_pk;
+    }
+}

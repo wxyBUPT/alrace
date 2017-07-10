@@ -1,0 +1,94 @@
+package com.alibaba.middleware.race.sync.db;
+
+/**
+ * Created by xiyuanbupt on 6/12/17.
+ * 约定:
+ * 1. bigTable保存时间戳和索引, 一个索引5byte, 1byte文件号, 4byte在文件的起始位置
+ * 2. string类型和long类型统一处理, 调用方负责为何需要更新的数据在哪一行的哪一列
+ * 3. 假定内存能够放下所有的数据
+ * 4. 使用一维数组代替二维数组, 性能较好
+ * 5. 按照第一次插入的顺序存储数据
+ * TODO 每个ROW的byte数尽量表示为2的整数次幂(目前未25byte),可以加快定位
+ *
+ * 预热赛的格式
+ * 100003 郑 明镜 女 677
+ * id:1:1|NULL|1|first_name:2:0|NULL|彭|last_name:2:0|NULL|田田|sex:2:0|NULL|男|score:1:0|NULL|86|
+ */
+public class StudentTable {
+
+    public static StudentTable INSTANCE = new StudentTable();
+
+    public void setup(int nRows){
+        if(bigTable != null)throw new RuntimeException("Big Table have inited");
+        bigTable = new byte[nRows * 25]; // 5byte 删除 5byte firstname, 5byte lastname, 5byte sex, 5byte score
+        RowLocks.INSTANCE.init(nRows);
+    }
+
+    private StudentTable(){}
+    private byte[] bigTable;
+
+    // TODO 返回是否更新可能没有用, 去掉返回值
+    public boolean updateIfBiger(int row, int seg, byte file, int file_pos){
+        // TODO 去掉assert
+        assert seg > 0 && seg<5;
+        RowLocks.INSTANCE.lockRow(row);
+        try{
+            int start = row * 25 + seg * 5;
+            if(compIndex(file, file_pos, start)){// 如果当前是最新的操作
+                setIndex(start, file, file_pos);
+                return true;
+            }
+            return false;
+        }finally {
+            RowLocks.INSTANCE.unLockRow(row);
+        }
+    }
+
+    public void deleteIfBiger(int row, byte file, int file_pos){
+        RowLocks.INSTANCE.lockRow(row);
+        try{
+            int start = row * 25;
+            if(compIndex(file, file_pos, start)){// 如果当前操作是最新的操作
+                setIndex(start, file, file_pos);
+            }
+        }finally {
+            RowLocks.INSTANCE.unLockRow(row);
+        }
+    }
+
+    // 设置bigTable start 位置的时间戳
+    private void setIndex(int start, byte file, int file_pos){
+        bigTable[start++] = file;
+        bigTable[start++] = (byte)((file_pos>>24)&0xff);
+        bigTable[start++] = (byte)((file_pos>>16)&0xff);
+        bigTable[start++] = (byte)((file_pos>>8)&0xff);
+        bigTable[start] = (byte)(file_pos & 0xff);
+    }
+
+    // 比较file + file_pos 的时间戳是否比原来的时间戳大
+    private boolean compIndex(byte file, int file_pos, int start){
+        byte b = file;
+        if(b != bigTable[start]){
+            return b>bigTable[start];
+        }
+        start ++;
+        b = (byte)((file_pos>>24)&0xff);
+        if(b!=bigTable[start]){
+            return b>bigTable[start];
+        }
+        start++;
+        b = (byte)((file_pos>>16)&0xff);
+        if(b!=bigTable[start]){
+            return b>bigTable[start];
+        }
+        start++;
+        b =(byte)((file_pos>>8)&0xff);
+        if(b!=bigTable[start]){
+            return b>bigTable[start];
+        }
+        start++;
+        b = (byte)((file_pos)&0xff);
+        assert b!=bigTable[start];//同一字段在同一时间不能有多个值
+        return b>bigTable[start];
+    }
+}

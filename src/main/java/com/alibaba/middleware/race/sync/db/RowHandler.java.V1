@@ -1,0 +1,178 @@
+package com.alibaba.middleware.race.sync.db;
+
+import com.alibaba.middleware.race.sync.Params;
+import com.alibaba.middleware.race.sync.io.RowReceiver;
+import com.alibaba.middleware.race.sync.utils.BytesUtil;
+
+/**
+ * Created by xiyuanbupt on 6/15/17.
+ */
+public class RowHandler implements RowReceiver{
+    static private long pk_start;
+    static private long pk_end;
+    static public void initClass(long star, long en){
+        pk_start = star;
+        pk_end = en;
+        assert pk_end < (1 << 21); // 能够在bitMap里面存下
+    }
+
+    // 行数据相关
+    private final byte[] data = new byte[1024];
+    private int dataSize;
+    int pos;
+    byte op;
+    // TODO 每一行跳过的byte数目需要依据实际情况改变
+    // TODO 真的很重要!!!!!
+    static final int skip = 52;
+    int skiped;
+
+    byte fileNum;
+    int line_off;
+
+    static int nameToColumn(byte b){
+        switch (b){
+            case 'i':
+                return 1;
+            case 'a':
+                return 2;
+            case 'e':
+                return 3;
+            case 'c':
+                return 4;
+            default:
+                return -1;
+        }
+    }
+
+    // nt|I|id:1:1|NULL|86659|first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+    // 贴一下各种操作的比例
+    // insert 10289492
+    // update 91141129
+    // delete  7366357
+    // 在本线程里面处理好所有的insert和delete
+    // 在另外的线程里面处理update
+    void parseRow(){
+        int i = pos;
+        int sep1 = 0;
+        for(;op==0;i++){
+            if(data[i]== Params.SEP_COL){
+                if(sep1==0){
+                    sep1 = i;
+                }else {
+                    op = data[i-1];
+                }
+            }
+        }
+        switch (op){
+            case Params.OP_INSERT:
+                pos = i;
+                handleInsert();
+                break;
+            // id:1:1|17003|NULL|first_name:2:0|高|NULL|last_name:2:0|依晶|NULL|sex:2:0|女|NULL|score:1:0|710|NULL|
+            case Params.OP_DELETE:
+                sep1 = 0;int sep2 = 0;
+                for(;sep2==0;i++){
+                    if(data[i]==Params.SEP_COL){
+                        if(sep1 == 0){
+                            sep1 = i;
+                        }else {
+                            sep2 = i;
+                        }
+                    }
+                }
+                long id = BytesUtil.LongIndexToLong(data, sep1 + 1, sep2 - 1);
+                int row = Index.INSTANCE.getIndex(id);
+                if(row != -1){
+                    StudentTable.INSTANCE.deleteIfBiger(row, fileNum, line_off);
+                }
+                break;// 已经完成delete的所有处理, 没有其他的操作
+            case Params.OP_UPDATE:
+                pos = i;
+                handleUpdate();
+                break;
+            default:
+                throw new RuntimeException("Can't find match, skip may error!");
+        }
+    }
+
+
+    // id:1:1|NULL|1|first_name:2:0|NULL|彭|last_name:2:0|NULL|田田|sex:2:0|NULL|男|score:1:0|NULL|86|
+    void handleInsert(){
+        int i = pos;
+        int sep1 = 0, sep2 = 0, sep3 = 0;
+        for(;sep3==0;i++){
+            if(data[i]==Params.SEP_COL){
+                if(sep1==0){
+                    sep1 = i;
+                }else if(sep2==0){
+                    sep2 = i;
+                }else {
+                    sep3 = i;
+                }
+            }
+        }
+        long id = BytesUtil.LongIndexToLong(data, sep2+1, sep3-1);
+        int row = Index.INSTANCE.getIndex(id);
+        if(row == -1)return;
+
+        sep1 = 0;
+        sep2 = 0;
+        int col = 1;// TODO 这里默认Insert操作字段是严格有序的, 如果出现bug这里是重点排查的位置
+        //first_name:2:0|NULL|彭|last_name:2:0|NULL|田田|sex:2:0|NULL|男|score:1:0|NULL|86|
+        for(;i<=dataSize;i++){
+            if(data[i]==Params.SEP_COL){
+                if(sep1 == 0){
+                    sep1 = i;
+                }else if(sep2==0){
+                    sep2 = i;
+                }else {
+
+                    sep1 = 0;
+                    sep2 = 0;
+                }
+            }
+        }
+    }
+
+    void handleUpdate(){
+
+    }
+
+
+    @Override
+    public void setRowIndex(byte fileNum, int off) {
+        this.fileNum = fileNum;
+        this.line_off= off;
+    }
+
+    @Override
+    public void inToBuffer(byte[] bytes, int from, int length) {
+        if(skiped == skip) {
+            System.arraycopy(bytes, from, data, dataSize, length);
+            dataSize += length;
+        }else {
+            int shouldSkip = skip - skiped;
+            if(length <= shouldSkip){
+                skiped += length;
+            }else {
+                skiped = skip;
+                int copyLenght = length - shouldSkip;
+                System.arraycopy(bytes, from + shouldSkip, data, dataSize, copyLenght);
+                dataSize += copyLenght;
+            }
+        }
+    }
+
+    @Override
+    public void init() {
+        dataSize = skip;
+        pos = skip;
+        op = 0;
+        skiped = 0;
+    }
+
+    @Override
+    public int getRowLenghtIncludeSepRow() {
+        return dataSize + 1;
+    }
+}

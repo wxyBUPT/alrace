@@ -1,0 +1,139 @@
+package com.alibaba.middleware.race.sync.db;
+
+import com.alibaba.middleware.race.sync.Server;
+import com.alibaba.middleware.race.sync.io.IOExecutors;
+import com.alibaba.middleware.race.sync.io.IndexLoaderTask;
+import com.alibaba.middleware.race.sync.model.PKChange;
+import com.lmax.disruptor.BlockingWaitStrategy;
+import com.lmax.disruptor.EventFactory;
+import com.lmax.disruptor.EventHandler;
+import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+
+/**
+ * Created by xiyuanbupt on 6/12/17.
+ * 数据预处理, 主要获得与结果相关的主键变更
+ */
+public class PreHandle {
+
+    static Logger logger = LoggerFactory.getLogger(Server.class);
+
+    public static PreHandle INSTANCE = new PreHandle();
+    private PreHandle(){}
+
+    // 第一遍遍历主要想获得主键变更
+    class RowEventFactory implements EventFactory<RowPreHandler>{
+        List<PKChange> pkChanges;
+        public RowEventFactory(List<PKChange> pkChanges) {
+            this.pkChanges = pkChanges;
+        }
+
+        @Override
+        public RowPreHandler newInstance() {
+            return new RowPreHandler(pkChanges);
+        }
+    }
+    private List<PKChange>[] pkChanges = new List[5];
+    private EventFactory<RowPreHandler>[]  factories = new EventFactory[5];
+    private Disruptor<RowPreHandler>[] disruptors = new Disruptor[5];
+
+    private Future<?>[] futures = new Future[5];
+    {
+        for(int i = 0; i<5; i++){
+            pkChanges[i] = new LinkedList<>();
+            factories[i] = new RowEventFactory(pkChanges[i]);
+            disruptors[i] = new Disruptor<RowPreHandler>(factories[i], 256, ComputeExecutors.EXECUTORS[i], ProducerType.SINGLE, new BlockingWaitStrategy());
+            disruptors[i].handleEventsWith(
+                    new EventHandler<RowPreHandler>() {
+                        @Override
+                        public void onEvent(RowPreHandler rowPreHandler, long l, boolean b) throws Exception {
+                            rowPreHandler.parseRow();
+
+                        }
+                    }
+            );
+            /**
+            then(
+                    new EventHandler<RowPreHandler>() {
+                        @Override
+                        public void onEvent(RowPreHandler rowPreHandler, long l, boolean b) throws Exception {
+                            rowPreHandler.handleRemain();
+                        }
+                    }
+            );
+             **/
+        }
+    }
+
+    public void start(){
+        for(int i = 0; i<5; i++){
+            futures[i] = IOExecutors.EXECUTORS[i].submit(new IndexLoaderTask(i, disruptors[i].getRingBuffer()));
+            disruptors[i].start();
+        }
+    }
+
+    public void waitFinish(){
+        try {
+            for(int i = 0; i<5; i++){
+                futures[i].get();
+                disruptors[i].shutdown();
+                disruptors[i].halt();
+            }
+        }catch (ExecutionException | InterruptedException e){
+            e.printStackTrace();
+        }
+    }
+
+    // 算法依据,
+    // 1. 同一时间不能同时存在两个相同的主键, 如果存在, 则中间一定是发生了删除操作, 前面各种的主键变更也是没有用的, 之后的一次遍历能够重现这一过程
+    // 2. from_pk 数据库在之前一定有相应的值存在, 中间可能发生行被删除 -> 重新插入 或者一直没有被删除
+    // 即使是删除->重新插入的情况, 也不会对结果有太大影响, 只是多计算一些字段
+    public Set<Long> getRelevantRows(long start, long end){
+        Map<Long, LinkedList<PKChange>> toMap = new HashMap<>(512); //需要依据具体情况初始化
+        List<PKChange>[] pkChangesList = pkChanges;
+        for(List<PKChange> list:pkChangesList){
+            for(PKChange pkChange:list){
+                if(!toMap.containsKey(pkChange.from_pk)){
+                    LinkedList<PKChange> changes = new LinkedList<>();
+                    changes.add(pkChange);
+                    toMap.put(pkChange.to_pk, changes);
+                }else {
+                    LinkedList<PKChange> changes = toMap.remove(pkChange.from_pk);
+                    assert changes != null && changes.size()!=0;// 基本是没有用的assert
+                    // assert !toMap.containsKey(pkChange.to_pk); 如果assert失败, 那么说明中间有删除语句, 其实不用做任何处理
+                    changes.add(pkChange);
+                    toMap.put(pkChange.to_pk, changes);//如果发生了覆盖, 则前面的一堆操作都是没有的操作, 有对应的DELETE语句
+                }
+            }
+        }
+        // TODO pkChangesList可以被GC
+        // 一次预先遍历, 获得数据范围
+        Set<Long> relaRows = getRelevantRows(toMap, start, end);
+        StringBuffer sb = new StringBuffer(relaRows.size()*2 + 10);
+        for(long i:relaRows){
+            sb.append(i).append(",");
+        }
+        // 尝试log出所有有变更的主键
+        logger.info("Info0: {}", sb.toString());
+        return relaRows;
+    }
+
+    private Set<Long> getRelevantRows(Map<Long, LinkedList<PKChange>> toMap, long start, long end){
+        Set<Long>  res = new HashSet<>(32);
+        for(Map.Entry<Long, LinkedList<PKChange>> entry:toMap.entrySet()){
+            long key = entry.getKey();
+            if(key <= start || key>=end)continue;
+            for(PKChange change:entry.getValue()){
+                if(change.from_pk<=start || change.from_pk>=end)res.add(change.from_pk);
+                if(change.to_pk<=start||change.to_pk>=end)res.add(change.to_pk);
+            }
+        }
+        return res;
+    }
+}

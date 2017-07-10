@@ -1,0 +1,22 @@
+[14:01:52.571] INFO  c.a.m.r.sync.Server -Schema:mi, Table:sut, Start:100, End200
+[14:02:05.482] INFO  c.a.m.r.sync.Server -load file:1 use time: 12790ms651us, total time: 12790ms651us
+[14:02:05.483] INFO  c.a.m.r.sync.Server -after file1:524287,524288,524288,524288,524288,524288,524288,524288,524288,290239,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:13.590] INFO  c.a.m.r.sync.Server -load file:2 use time: 8108ms621us, total time: 20899ms272us
+[14:02:13.591] INFO  c.a.m.r.sync.Server -after file2:524287,524288,524288,524288,524288,524288,524288,524288,524288,309471,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:21.490] INFO  c.a.m.r.sync.Server -load file:3 use time: 7899ms900us, total time: 28799ms172us
+[14:02:21.493] INFO  c.a.m.r.sync.Server -after file3:524287,524288,524288,524288,524288,524288,524288,524288,524288,317143,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:29.091] INFO  c.a.m.r.sync.Server -load file:4 use time: 7600ms748us, total time: 36399ms920us
+[14:02:29.091] INFO  c.a.m.r.sync.Server -after file4:524287,524288,524288,524288,524288,524288,524288,524288,524288,339809,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:36.884] INFO  c.a.m.r.sync.Server -load file:5 use time: 7792ms874us, total time: 44192ms794us
+[14:02:36.884] INFO  c.a.m.r.sync.Server -after file5:524287,524288,524288,524288,524288,524288,524288,524288,524288,378738,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:44.178] INFO  c.a.m.r.sync.Server -load file:6 use time: 7294ms177us, total time: 51486ms971us
+[14:02:44.179] INFO  c.a.m.r.sync.Server -after file6:524287,524288,524288,524288,524288,524288,524288,524288,524288,426078,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:51.183] INFO  c.a.m.r.sync.Server -load file:7 use time: 7004ms721us, total time: 58491ms692us
+[14:02:51.184] INFO  c.a.m.r.sync.Server -after file7:524287,524288,524288,524288,524288,524288,524288,524288,524288,467988,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:02:58.646] INFO  c.a.m.r.sync.Server -load file:8 use time: 7463ms53us, total time: 65954ms745us
+[14:02:58.647] INFO  c.a.m.r.sync.Server -after file8:524287,524288,524288,524288,524288,524288,524288,524288,524288,516334,42278,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:03:07.584] INFO  c.a.m.r.sync.Server -load file:9 use time: 8938ms740us, total time: 74893ms485us
+[14:03:07.585] INFO  c.a.m.r.sync.Server -after file9:524287,524288,524288,524288,524288,524288,524288,524288,524288,516334,524288,524288,524288,524288,524288,524288,524288,524288,524288,327279,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:03:15.213] INFO  c.a.m.r.sync.Server -load file:10 use time: 7628ms165us, total time: 82521ms650us
+[14:03:15.213] INFO  c.a.m.r.sync.Server -after file10:524287,524288,524288,524288,524288,524288,524288,524288,524288,516334,524288,524288,524288,524288,524288,524288,524288,524288,524288,335975,0,0,0,0,0,0,0,0,0,0,0,0,
+[14:03:15.215] INFO  c.a.m.r.sync.Server -pkDecCount:0, pkIncCount:10289492, maxIncSize:7955,upSegCount:86195789, pkChange:4945340, pkChangeSegChange:0fNChange:38999405,max:3, lNChange:7585754,max:6sexChang:0,scoreChange:39610630,scoreMax:1006, score2Change:0,score2Max:0,pkChangeMinDis:1,pkChangeMaxDis:500435935, IbigPkCount:0, UbigPkCount:1891600

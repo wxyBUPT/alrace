@@ -1,0 +1,35 @@
+package com.alibaba.middleware.race.sync.model;
+
+/**
+ * Created by xiyuanbupt on 6/12/17.
+ */
+public class BitMap {
+
+    private final long[] data;
+
+    public BitMap(int bits){
+        assert bits % (1<<6) == 0;
+        this.data = new long[bits >>> 6];
+    }
+
+    public boolean set(int index){
+        if (!get(index)) {
+            data[(index >>> 6)] |= (1L << index);
+            return true;
+        }
+        return false;
+    }
+
+    public boolean get(int index){
+        return (data[(index >>> 6)] & (1L << index)) != 0;
+    }
+
+    public boolean unset(int index){
+        // TODO 取消index
+        if(get(index)){
+            data[(index >>> 6)] &= ~(1L << index);
+            return true;
+        }
+        return false;
+    }
+}

@@ -1,0 +1,44 @@
+package com.alibaba.middleware.race.sync.utils;
+
+/**
+ * Created by xiyuanbupt on 6/8/17.
+ */
+public class BytesUtil {
+
+    public static boolean equals(byte[] src, int s1, int e1, byte[] dst, int s2, int e2){
+        if((e1 - s1) != (e2 - s2))return false;
+        while (s1<=e2){
+            if(src[s1++] != dst[s2++])return false;
+        }
+        return true;
+    }
+
+    public static boolean equals(byte[] src, int s1, int e1, byte[] dst){
+        assert e1 - s1 + 1 == dst.length;
+        int i = 0;
+        while (s1 <= e1){
+            if(src[s1++] != dst[i++])return false;
+        }
+        return true;
+    }
+
+    // 假设传入的参数都是合法的, 所有 byte 值均在 48 - 57
+    public static long LongIndexToLong(byte[] bytes, int start, int end){
+        long res = 0;
+        while (start <= end){
+            res *= 10;
+            res += bytes[start++] - 48;
+        }
+        return res;
+    }
+
+    public static int LongIndexToInt(byte[] bytes, int start, int end){
+        assert end - start <9;
+        int res = 0;
+        while (start<=end){
+            res *= 10;
+            res += bytes[start++] - 48;
+        }
+        return res;
+    }
+}

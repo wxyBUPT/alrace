@@ -1,0 +1,285 @@
+package com.alibaba.middleware.race.sync.statistics;
+
+import com.alibaba.middleware.race.sync.Params;
+import com.alibaba.middleware.race.sync.Server;
+import com.alibaba.middleware.race.sync.db.ComputeExecutors;
+import com.alibaba.middleware.race.sync.io.IOExecutors;
+import com.alibaba.middleware.race.sync.io.IndexLoaderTask;
+import com.alibaba.middleware.race.sync.io.RowReceiver;
+import com.lmax.disruptor.BlockingWaitStrategy;
+import com.lmax.disruptor.EventFactory;
+import com.lmax.disruptor.EventHandler;
+import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Future;
+
+/**
+ * Created by xiyuanbupt on 6/13/17.
+ *
+ */
+public class StatisticsV3 {
+
+    Logger logger = LoggerFactory.getLogger(Server.class);
+    int sep2Min = Integer.MAX_VALUE;
+    int sep2Max = Integer.MIN_VALUE;
+    int sep3Min = Integer.MAX_VALUE;
+    int sep3Max = Integer.MIN_VALUE;
+    int sep4Min = Integer.MAX_VALUE;
+    int sep4Max = Integer.MIN_VALUE;
+    int key_max_len = Integer.MIN_VALUE;
+
+    long pk_max = Long.MIN_VALUE, pk_min = Long.MAX_VALUE;
+    int i_count = 0,
+            d_count= 0,
+            u_count= 0,
+            up_pri= 0,
+            in_range_up= 0, in_range_delete= 0;
+
+
+    static Set<String> seen = new CopyOnWriteArraySet<>();
+    static Set<String> insert_seen = new CopyOnWriteArraySet<>();
+    static long pk_start, pk_end;
+    public static void initClass(String table, String schema, long star, long en){
+        pk_start= star;
+        pk_end= en;
+    }
+
+    private Future<?> future;
+    Disruptor<RowOp> disruptor;
+
+    int id;
+    public StatisticsV3(int id){
+        this.id = id;
+    }
+
+    public void load(){
+        disruptor = new Disruptor<RowOp>(ROW_FACTORY, 256, ComputeExecutors.EXECUTORS[id], ProducerType.SINGLE, new BlockingWaitStrategy());
+        disruptor.handleEventsWith(
+                new EventHandler<RowOp>() {
+                    @Override
+                    public void onEvent(RowOp rowOp, long l, boolean b) throws Exception {
+                        rowOp.handleRow();
+                    }
+                }
+        );
+        future = IOExecutors.EXECUTORS[id].submit(new IndexLoaderTask(id, disruptor.getRingBuffer()));
+        disruptor.start();
+    }
+
+    public void waitFinish(){
+        try{
+            future.get();
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+        disruptor.shutdown();
+        disruptor.halt();
+        logger.info("id:{}, U:{}, I:{}, D:{}, TOTAL:{}, " +
+                        "UPPK:{}, IRD:{}, IRU:{} PK_MAX:{}, PK_MIN:{}, SEP2MIN:{}, SEP2MAX:{}, " +
+                        "SEP3MIN:{}, SEP3MAX:{}, SEP4MIN:{}, SEP4MAX:{}, strMAX:{}" ,
+                id, u_count, i_count, d_count,(u_count + i_count + d_count),
+                up_pri,in_range_delete, in_range_up, pk_max, pk_min, sep2Min,sep2Max,
+                sep3Min,
+                sep3Max, sep4Min, sep4Max,key_max_len
+        );
+    }
+
+    private final EventFactory<RowOp> ROW_FACTORY = new EventFactory<RowOp>() {
+        @Override
+        public RowOp newInstance() {
+            return new RowOp();
+        }
+    };
+
+    private class RowOp implements RowReceiver{
+
+        private final byte[] data = new byte[1024];
+        private int dataSize;
+        int pos;
+        int col;
+        byte op;
+        String table;
+
+        // |mysql-bin.000018472816146|1496828222000|middleware5|student|I|(sep5)id:1:1|NULL|86659|first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+        void handleRow(){
+            int sep1 = 0, sep2 = 0, sep3 = 0, sep4 = 0, sep5 = 0;
+            int i = pos;
+            for (; sep5 == 0; i++) {
+                if (data[i] == Params.SEP_COL) {
+                    if (sep1 == 0) {
+                        sep1 = i;
+                    } else if (sep2 == 0) {
+                        sep2 = i;
+                    } else if (sep3 == 0) {
+                        sep3 = i;
+                    } else if (sep4 == 0) {
+                        sep4 = i;
+                    } else {
+                        sep5 = i;
+                    }
+                }
+            }
+            sep2Min = Math.min(sep2Min, sep2);
+            sep2Max = Math.max(sep2Max, sep2);
+            sep4Min = Math.min(sep4Min, sep4);
+            sep4Max = Math.max(sep4Max, sep4);
+            sep3Max = Math.max(sep3, sep3Max);
+            sep3Min = Math.min(sep3, sep3Min);
+            pos = i;
+
+            op = data[sep5-1];
+
+            switch (op){
+                case Params.OP_INSERT:
+                    i_count++;
+                    handleInsert();
+                    break;
+                case Params.OP_DELETE:
+                    d_count++;
+                    handleDelete();
+                    break;
+                case Params.OP_UPDATE:
+                    u_count++;
+                    handleUpdate();
+                    break;
+                default: // case Params.OP_UPDATE
+                    System.out.println("Wrone");
+                    break;
+            }
+        }
+
+        // id:1:1|NULL|86659|first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+        void handleInsert(){
+            if(!insert_seen.contains(table)){
+                logger.info(new String(data, 0, dataSize));
+                insert_seen.add(table);
+            }
+            // 找到三元组, 找到冒号的位置
+            int sep1=0, sep2=0, sep3=0;
+            int i = pos;
+            for(;sep3==0;i++){
+                if(data[i] == Params.SEP_COL){
+                    if(sep1==0){
+                        sep1 = i;
+                    }else if(sep2==0){
+                        sep2 = i;
+                    }else {
+                        sep3 = i;
+                    }
+                }
+            }
+            assert data[sep1-1] == Params.TYPE_DIG && data[sep1-3]==Params.TYPE_PRI;
+            Long aft = Long.parseLong(new String(data, sep2+1, sep3-sep2-1));
+            pk_max = Math.max(aft, pk_max);
+            pk_min = Math.min(aft, pk_min);
+            pos = i;
+            getMaxStr();
+        }
+
+        //first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+        void getMaxStr(){
+            int sep1=0, sep2=0, sep3=0;
+            int i = pos;
+            for(;i<dataSize;i++){
+                if(data[i] == Params.SEP_COL) {
+                    if (sep1 == 0) {
+                        sep1 = i;
+                    } else if (sep2 == 0) {
+                        sep2 = i;
+                    } else {
+                        sep3 = i;
+                        key_max_len = Math.max(key_max_len, Math.max(sep3 - sep2 - 1, sep2 - sep1 - 1));
+                        sep1 = 0;
+                        sep2 = 0;
+                        sep3 = 0;
+                    }
+                }
+            }
+        }
+
+
+        //id:1:1|298524|298524|first_name:2:0|彭|江|
+        void handleUpdate(){
+            // 找到三元组, 找到冒号的位置
+            int sep1=0, sep2=0, sep3=0;
+            int i = pos;
+            for(;sep3==0;i++){
+                if(data[i] == Params.SEP_COL){
+                    if(sep1==0){
+                        sep1 = i;
+                    }else if(sep2==0){
+                        sep2 = i;
+                    }else {
+                        sep3 = i;
+                    }
+                }
+            }
+
+            Long pre = Long.parseLong(new String(data, sep1 + 1, sep2 - sep1 - 1));
+            Long aft = Long.parseLong(new String(data, sep2 + 1, sep3 - sep2 - 1));
+            pk_min = Math.min(pk_min, Math.min(aft, pre));
+            pk_max = Math.max(pk_max, Math.max(aft, pre));
+
+            if(!pre.equals(aft)){
+                up_pri++;
+                if((pre>pk_start&& pre<pk_end) || (aft>pk_start&& aft<pk_end)){
+                    in_range_up++;
+                }
+            }
+            pos = i;
+            getMaxStr();
+        }
+
+        // id:1:1|454545|NULL|first_name:2:0|彭|NULL|last_name:2:0|天乙|NULL|sex:2:0|男|NULL|score:1:0|166|NULL|
+        void handleDelete(){
+            int sep1=0, sep2=0, sep3=0;
+            int i = pos;
+            for(;sep3==0;i++){
+                if(data[i] == Params.SEP_COL){
+                    if(sep1==0){
+                        sep1 = i;
+                    }else if(sep2==0){
+                        sep2 = i;
+                    }else {
+                        sep3 = i;
+                    }
+                }
+            }
+            Long pre = Long.parseLong(new String(data, sep1 + 1, sep2 - sep1 - 1));
+            if(pre>pk_start&& pre<pk_end){
+                in_range_delete++;
+            }
+            pos = i;
+            getMaxStr();
+        }
+
+        @Override
+        public void setRowIndex(byte fileNum, int off) {
+
+        }
+
+        @Override
+        public void inToBuffer(byte[] bytes, int from, int length) {
+            System.arraycopy(bytes, from, data, dataSize, length);
+            dataSize += length;
+        }
+
+        @Override
+        public void init() {
+            dataSize = 0;
+            pos = 1;
+            op = 0;
+            table = null;
+        }
+
+        @Override
+        public int getRowLenghtIncludeSepRow() {
+            return dataSize + 1;
+        }
+    }
+}

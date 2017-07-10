@@ -1,0 +1,79 @@
+package com.alibaba.middleware.race.sync.io;
+
+import com.alibaba.middleware.race.sync.Constants;
+import com.alibaba.middleware.race.sync.Params;
+import com.alibaba.middleware.race.sync.utils.TimeRecorder;
+import com.lmax.disruptor.RingBuffer;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+
+/**
+ * Created by xiyuanbupt on 6/13/17.
+ * 负责读取文件, 并获得文件每行的位置
+ */
+public class IndexLoaderTask implements Runnable{
+
+    private final int id;
+    private final RingBuffer<? extends RowReceiver> ringBuffer;
+    private final byte[] filesNum = new byte[2];
+
+    public IndexLoaderTask(int id, RingBuffer<? extends RowReceiver> ringBuffer){
+        assert -1<id && id<5;
+        this.ringBuffer = ringBuffer;
+        this.id = id;
+        for(int i = 0; i<2; i++){
+            filesNum[i] = (byte) (id * 2 + i + 1);
+        }
+    }
+
+    @Override
+    public void run() {
+        ByteBuffer buffer = ByteBuffer.allocate(Params.BUFFER_SIZE_TABLE);
+        final byte[] bytes = buffer.array();
+        try{
+            TimeRecorder.INSTANCES[id].start();
+            long sequence = ringBuffer.next();
+            RowReceiver raw = ringBuffer.get(sequence);
+            raw.init();
+            for(byte num:filesNum){
+                String file = Constants.DATA_HOME + File.separator + (int)num + ".txt";
+                Path path = Paths.get(file);
+                FileChannel channel = FileChannel.open(path, StandardOpenOption.READ);
+                long size = channel.size(), finish = 0; int line_index = 0;
+                int length;
+                while ((length = channel.read(buffer)) > 0){
+                    int mark = 0;
+                    for(int i = 0; i<length; i++){
+                        finish ++;
+                        if(bytes[i] == Params.SEP_ROW){
+                            if(mark < i)raw.inToBuffer(bytes, mark, i-mark);
+                            raw.setRowIndex(num, line_index);
+                            line_index += raw.getRowLenghtIncludeSepRow();
+                            ringBuffer.publish(sequence);
+                            if(finish <= size){
+                                sequence = ringBuffer.next();
+                                raw = ringBuffer.get(sequence);
+                                raw.init();
+                            }
+                            mark = i+1;
+                        }
+                    }
+                    if(mark < length){
+                        raw.inToBuffer(bytes, mark, length - mark);
+                    }
+                    buffer.clear();
+                }
+                channel.close();
+                TimeRecorder.INSTANCES[id].record("loadfile: " + num + " Finish");
+            }
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+    }
+}

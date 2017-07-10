@@ -1,0 +1,33 @@
+package com.alibaba.middleware.race.sync.db;
+
+import com.alibaba.middleware.race.sync.model.BitIndex;
+import com.alibaba.middleware.race.sync.utils.TimeRecorder;
+
+import java.util.Set;
+
+/**
+ * Created by xiyuanbupt on 6/15/17.
+ *
+ */
+public class DB {
+
+    public void setup(long start, long end){
+        RowPreHandler.initClass(start, end);
+        TimeRecorder.MAIN.start();
+        PreHandle.INSTANCE.start();
+        PreHandle.INSTANCE.waitFinish();
+        TimeRecorder.MAIN.record("Previsit");
+        Set<Long> relevantRows = PreHandle.INSTANCE.getRelevantRows(start, end);
+        PreHandle.INSTANCE = null;
+        System.gc();
+
+        TimeRecorder.MAIN.record("getrelevantrows");
+        BitIndex.INSTANCE.initCounterCache();
+        Index.setup(relevantRows, start, end);
+
+        // 获得需要操作多少行数据, 初始化行锁
+        int nRows = Index.INSTANCE.getRowCount();
+        StudentTable.INSTANCE.setup(nRows);
+    }
+
+}

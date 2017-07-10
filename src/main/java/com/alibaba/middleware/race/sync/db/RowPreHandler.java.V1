@@ -1,0 +1,198 @@
+package com.alibaba.middleware.race.sync.db;
+
+import com.alibaba.middleware.race.sync.Params;
+import com.alibaba.middleware.race.sync.io.RowReceiver;
+import com.alibaba.middleware.race.sync.model.BitIndex;
+import com.alibaba.middleware.race.sync.model.PKChange;
+import com.alibaba.middleware.race.sync.utils.BytesUtil;
+
+import java.util.List;
+
+/**
+ * Created by xiyuanbupt on 6/11/17.
+ * 数据预处理, 主要处理主键的变更
+ */
+public class RowPreHandler implements RowReceiver{
+
+    static private long pk_start;
+    static private long pk_end;
+    static public void initClass(long star, long en){
+        pk_start = star;
+        pk_end = en;
+        assert pk_end < (1 << 21); // 能够在bitMap里面存下
+    }
+
+    // 行数据相关
+    private final byte[] data = new byte[1024];
+    private int dataSize;
+    int pos;
+    byte op;
+
+    // TODO 每一行跳过的byte数目需要依据实际情况改变
+    // TODO 真的很重要!!!!!
+    static final int skip = 54;
+    int skiped;
+
+    // 主键变更
+    List<PKChange> pkChanges;
+    protected RowPreHandler(List<PKChange> pkChanges){
+        this.pkChanges = pkChanges;
+    }
+
+    // nt|I|id:1:1|NULL|86659|first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+    // 贴一下各种操作的比例
+    // insert 10289492
+    // update 91141129
+    // delete  7366357
+    void parseRow(){
+        int i = pos;
+        int sep1 = 0;
+        for(;op==0;i++){
+            if(data[i] == Params.SEP_COL){
+                if(sep1 == 0){
+                    sep1 = i;
+                }else {
+                    op = data[i-1];
+                }
+            }
+        }
+        pos = i;
+
+        // TODO 对应的处理路由到对应的函数
+        if(op == Params.OP_UPDATE){
+            handleUpdate();
+        }else if(op == Params.OP_INSERT){
+            handleInsert();
+        }else if(op == Params.OP_DELETE){
+            //handleDelete();
+        }else {
+            System.out.println(new String(data, pos, dataSize - pos - 1));
+            System.out.println(new String(data, 0, dataSize));
+            throw new RuntimeException("Can't find match, skip error!");
+        }
+    }
+
+    /**
+    // TODO 为了避免5个核心的浪费, 所以update有一定的概率在另外的线程中处理
+    // 在算法正确的基础上完成
+    void handleRemain(){
+        if(op==Params.OP_UPDATE){
+            handleUpdate();
+        }
+    }
+     **/
+
+    // id:1:1|636659|NULL|first_name:2:0|杨|NULL|last_name:2:0|我|NULL|sex:2:0|男|NULL|score:1:0|88|NULL|
+    void handleDelete(){
+        int i = pos;
+        int sep1 = 0, sep2= 0;
+        for(;sep2==0;i++){
+            if(data[i] == Params.SEP_COL){
+                if(sep1 == 0){
+                    sep1 = i;
+                }else {
+                    sep2 = i;
+                }
+            }
+        }
+        // TODO 如果运行没有问题, 去掉相应的assert
+        assert data[sep1-1] == Params.TYPE_PRI;
+        assert data[sep1-3] == Params.TYPE_DIG;
+        long deleted_pk = BytesUtil.LongIndexToLong(data, sep1 + 1, sep2-1);
+        pos = i;
+    }
+
+    // id:1:1|NULL|1|first_name:2:0|NULL|吴|last_name:2:0|NULL|九|sex:2:0|NULL|女|score:1:0|NULL|60|
+    void handleInsert(){
+        int i = pos;
+        int sep1 = 0, sep2 = 0, sep3 = 0;
+        for(;sep3==0;i++){
+            if(data[i]==Params.SEP_COL){
+                if(sep1 == 0){
+                    sep1 = i;
+                }else if(sep2==0){
+                    sep2 = i;
+                }else {
+                    sep3 = i;
+                }
+            }
+        }
+        pos = i;
+        // TODO 如果运行没有问题, 去掉相应的assert
+        assert data[sep1-1] == Params.TYPE_PRI;
+        assert data[sep1-3] == Params.TYPE_DIG;
+        long to = BytesUtil.LongIndexToLong(data, sep2 + 1, sep3 - 1);
+        if(to>pk_start && to<pk_end){
+            BitIndex.INSTANCE.fastSet((int)to);
+        }
+    }
+
+    // id:1:1|1218005|1218005|score:1:0|88|482|
+    void handleUpdate(){
+        int i = pos;
+        int sep1 = 0, sep2 = 0, sep3 = 0;
+        for(;sep3==0;i++){
+            if(data[i]==Params.SEP_COL){
+                if(sep1 == 0){
+                    sep1 = i;
+                }else if(sep2==0){
+                    sep2 = i;
+                }else {
+                    sep3 = i;
+                }
+            }
+        }
+        pos = i;
+        // TODO 如果运行没有问题, 去掉相应的assert
+        assert data[sep1-1] == Params.TYPE_PRI;
+        assert data[sep1-3] == Params.TYPE_DIG;
+        long from = BytesUtil.LongIndexToLong(data, sep1 + 1, sep2 - 1);
+        long to = BytesUtil.LongIndexToLong(data, sep2 + 1, sep3 - 1);
+        if(from != to){
+            pkChanges.add(new PKChange(from, to));
+            if(to>pk_start&& to<pk_end){
+                BitIndex.INSTANCE.fastSet((int)to);
+            }
+        }
+    }
+
+    @Override
+    public void setRowIndex(byte fileNum, int off) {
+
+    }
+
+    @Override
+    public int getRowLenghtIncludeSepRow() {
+        return dataSize + skip + 1;
+    }
+
+    //|mysql-bin.000014520195413|1496722265000|middleware|student|U|id:1:1|1218005|1218005|score:1:0|88|482|
+    //|mysql-bin.000018472816146|1496828222000|middleware|student|I|id:1:1|NULL|86659|first_name:2:0|NULL|林|last_name:2:0|NULL|京甜|sex:2:0|NULL|男|score:1:0|NULL|87|
+    // -sep1 min:20, max:27
+    // 尽量多的跳过没有用的字段
+    @Override
+    public void inToBuffer(byte[] bytes, int from, int length) {
+        if(skiped == skip) {
+            System.arraycopy(bytes, from, data, dataSize, length);
+            dataSize += length;
+        }else {
+            int shouldSkip = skip - skiped;
+            if(length <= shouldSkip){
+                skiped += length;
+            }else {
+                skiped = skip;
+                int copyLenght = length - shouldSkip;
+                System.arraycopy(bytes, from + shouldSkip, data, dataSize, copyLenght);
+                dataSize += copyLenght;
+            }
+        }
+    }
+
+    @Override
+    public void init() {
+        dataSize = 0;
+        pos = 0;
+        op = 0;
+        skiped = 0;
+    }
+}

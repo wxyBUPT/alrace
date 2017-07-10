@@ -1,0 +1,266 @@
+package com.alibaba.middleware.race.sync.V2.db;
+
+
+import com.alibaba.middleware.race.sync.Constants;
+import com.alibaba.middleware.race.sync.Params;
+import com.alibaba.middleware.race.sync.V2.utils.BytesUtil;
+import com.lmax.disruptor.EventHandler;
+
+import java.nio.ByteBuffer;
+
+/**
+ * Created by xiyuanbupt on 6/19/17.
+ * 先大胆的尝试全程无锁, 出现了线程安全问题再分析是哪里的问题, 有可能原始数据没有那么复杂
+ */
+public class DataHandler implements EventHandler<ByteBuffer>{
+
+    private final int hash;
+    private final int coucurrent_count = Params.CONCURRENT_COUNT;
+    static final int skip = 54;
+    public DataHandler(int hash) {
+        this.hash = hash;
+    }
+
+    @SuppressWarnings("Duplicates")
+    @Override
+    public void onEvent(ByteBuffer byteBuffer, long l, boolean b) throws Exception {
+        byte[] data = byteBuffer.array();
+        int len = byteBuffer.limit();
+        int pos = 0; // 第一个 '|' 的位置
+        byte op = 0;
+        // 下面开始一行一行的解析数据
+        // |mysql-bin.000022814547989|1497439282000|middleware8|student|I|id:1:1|NULL|1|first_name:2:0|NULL|邹|last_name:2:0|NULL|明益|sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+        while (pos < len){
+            int i = pos + skip;
+            // t|I|id:1:1|NULL|1|first_name:2:0|NULL|邹|last_name:2:0|NULL|明益|sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+            op = 0;
+            int sep1 = 0;
+            for(;op==0;i++){
+                if(data[i]== Params.SEP_COL){
+                    if(sep1 == 0){
+                        sep1 = i;
+                    }else {
+                        op  = data[i-1];
+                    }
+                }
+            }
+
+            if(op == Params.OP_UPDATE){ // id:1:1|NULL|1|first_name:2:0|NULL|邹|last_name:2:0|NULL|明益|sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+                i += 7;
+                int start = i;
+                while (data[i]!=Params.SEP_COL)i++;
+                int id = BytesUtil.BytesIndexToInt(data, start, i- 1);
+                // |4231020|first_name:2:0|孙|郑|
+                i++;
+                start = i;
+                while (data[i] != Params.SEP_COL)i++;
+                int id_aft = BytesUtil.BytesIndexToInt(data, start, i - 1);
+                pos = i + 2;
+                //|first_name:2:0|孙|郑|
+                if(id != id_aft){ // 主键变更
+                    if(id<Params.BIG_TABLE_ROW_COUNT && id_aft< Params.BIG_TABLE_ROW_COUNT){ // 前面变到前面
+                        BigTable.INSTANCE.mv(id, id_aft);
+                        BitMap.INSTANCE.unset(id);
+                        BitMap.INSTANCE.set(id_aft);
+                    }else if(id<Params.BIG_TABLE_ROW_COUNT && id_aft >= Params.BIG_TABLE_ROW_COUNT){ // 前面变到后面
+                        int to_index = AssistTable.INSTANCE.nextRow();
+                        BitMap.INSTANCE.unset(id);
+                        AssistTable.INSTANCE.index.put(id_aft, to_index);
+                        BigTable.INSTANCE.mvToAssist(id, to_index);
+                    }else if(id >= Params.BIG_TABLE_ROW_COUNT && id_aft < Params.BIG_TABLE_ROW_COUNT){ // // 后面变到前面
+                        int from_index = AssistTable.INSTANCE.index.remove(id);
+                        BitMap.INSTANCE.set(id_aft);
+                        BigTable.INSTANCE.getFromAssist(from_index, id_aft);
+                    }else { // 后面变到后面
+                        int index = AssistTable.INSTANCE.index.remove(id);
+                        AssistTable.INSTANCE.index.put(id_aft, index);
+                    }
+                }else { //|first_name:2:0|孙|郑|
+                    // 只有三个字段会发生变更
+                    int sep2 = 0, sep3 = 0;
+                    switch (data[i+7]) {
+                        case 110: // 'n' |first_name:2:0|
+                            i += 16;
+                            for (; sep3 == 0; i++) {
+                                if (data[i] == Params.SEP_COL) {
+                                    if (sep2 == 0) {
+                                        sep2 = i;
+                                    } else {
+                                        sep3 = i;
+                                    }
+                                }
+                            }
+                            if (id < Params.BIG_TABLE_ROW_COUNT) {// 如果在范围内
+                                BigTable.INSTANCE.storeFirstName(data, sep2 + 1, sep3 - 1, id);
+                            } else {
+                                int row = AssistTable.INSTANCE.index.get(id);
+                                AssistTable.INSTANCE.storeFirstName(data, sep2 + 1, sep3 - 1, row);
+                            }
+                            pos = i + 1;
+                            break;
+                        case 97: // 'a'  |last_name:2:0|
+                            i += 15;
+                            for (; sep3 == 0; i++) {
+                                if (data[i] == Params.SEP_COL) {
+                                    if (sep2 == 0) {
+                                        sep2 = i;
+                                    } else {
+                                        sep3 = i;
+                                    }
+                                }
+                            }
+                            if (id < Params.BIG_TABLE_ROW_COUNT) {// 如果在范围内
+                                BigTable.INSTANCE.storeLastName(data, sep2 + 1, sep3 - 1, id);
+                            } else {
+                                int row = AssistTable.INSTANCE.index.get(id);
+                                AssistTable.INSTANCE.storeLastName(data, sep2 + 1, sep3 - 1, row);
+                            }
+                            pos = i + 1;
+                            break;
+                        case 49: // '1'  |score:1:0|100|200|
+                            i += 11;
+                            for (; sep3 == 0; i++) {
+                                if (data[i] == Params.SEP_COL) {
+                                    if (sep2 == 0) {
+                                        sep2 = i;
+                                    } else {
+                                        sep3 = i;
+                                    }
+                                }
+                            }
+                            if (id < Params.BIG_TABLE_ROW_COUNT) {
+                                BigTable.INSTANCE.storeScore(data, sep2 + 1, sep3 - 1, id);
+                            } else {
+                                int row = AssistTable.INSTANCE.index.get(id);
+                                AssistTable.INSTANCE.storeScore(data, sep2 + 1, sep3 - 1, row);
+                            }
+                            pos = i + 1;
+                            break;
+                        default:
+                            System.out.println(id + " " + id_aft);
+                            throw new RuntimeException("Don't match any");
+                    }
+                }
+            }else if(op == Params.OP_INSERT){ // id:1:1|4231020|4231020|first_name:2:0|孙|郑|
+                i += 12;
+                int start = i;
+                while (data[i] != Params.SEP_COL)i++;
+                int id = BytesUtil.BytesIndexToInt(data, start, i-1);
+                // TODO 处理属于自己的insert, 所有的插入操作是否需要加锁有待商榷!!
+                // |first_name:2:0|NULL|邹|last_name:2:0|NULL|明益|sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+                if(id < Params.BIG_TABLE_ROW_COUNT){
+                    BitMap.INSTANCE.set(id);
+                    i += 21;
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    BigTable.INSTANCE.storeFirstName(data, start, i-1, id);
+
+                    // |last_name:2:0|NULL|明益|sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+                    i += 20; // 跳到last_name 的第一个byte
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    BigTable.INSTANCE.storeLastName(data, start, i-1, id);
+                    // |sex:2:0|NULL|女|score:1:0|NULL|797|score2:1:0|NULL|106271|
+                    i += 14; // sex的第一个字符
+                    BigTable.INSTANCE.storeSex(data[i], id);
+                    /**
+                     i += 4; // 当前data[i] == 's' 即score
+                     // score:1:0|NULL|797|score2:1:0|NULL|106271|
+                     i += 15;
+                     **/
+                    i += 19;
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    BigTable.INSTANCE.storeScore(data, start, i-1, id);
+                    // TODO 只为了本地测试, 正式的时候需要去掉
+                    // TODO 提交前去掉!!!!!!
+                    // TODO 提交前去掉!!!!!!!
+                    if(Constants.dev){ //|'\n'
+                        pos = i + 2;
+                        continue;
+                    }
+                    i+= 17; // |score2:1:0|NULL|106271|
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    BigTable.INSTANCE.storeScore2(data, start, i - 1, id);
+                    pos = i + 2;
+                }else {
+                    int row = AssistTable.INSTANCE.nextRow();
+                    AssistTable.INSTANCE.index.put(id, row);
+                    i += 21; // 调到first_name 的第一个byte
+                    start = i;
+                    while (data[i] != Params.SEP_COL) {
+                        i++;
+                    }
+                    AssistTable.INSTANCE.storeFirstName(data, start, i-1, row);
+                    i += 20; // 跳到last_name 的第一个byte
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    AssistTable.INSTANCE.storeLastName(data, start, i-1, row);
+                    i += 14; // sex的第一个字符
+                    AssistTable.INSTANCE.storeSex(data[i], id);
+                    /**
+                     i += 4;
+                     i += 15;
+                     **/
+                    i += 19;
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    AssistTable.INSTANCE.storeScore(data, start, i-1, row);
+                    // TODO 只是为了本地测试, 正式的时候去掉
+                    // TODO 提交前去掉!!!
+                    // TODO 调查一下编译器会不会帮忙优化
+                    if(Constants.dev){
+                        pos += 2;
+                        continue;
+                    }
+                    i += 17;
+                    start = i;
+                    while (data[i] != Params.SEP_COL){
+                        i++;
+                    }
+                    AssistTable.INSTANCE.storeScore2(data, start, i-1, row);
+                    pos = i + 2;
+                }
+            }else { // id:1:1|393106|NULL|first_name:2:0|王|NULL|last_name:2:0|依|NULL|sex:2:0|女|NULL|score:1:0|851|NULL|
+                // 此时一定是delete操作
+                i += 7;
+                int start = i;
+                while (data[i] != Params.SEP_COL)i++;
+                int id = BytesUtil.BytesIndexToInt(data, start, i-1);
+                // TODO 跳过中间没有用的数据, 如果出现bug, 这里重点排查
+                // TODO本地测试环境要比这个字符少很多
+                // TODO 测试环境用下面的值
+                //i += 95;
+                i+=80;
+                while (data[i] != Params.SEP_ROW) i++;
+                pos = i + 1;
+                // TODO 处理属于自己的delete
+                if(id< Params.BIG_TABLE_ROW_COUNT){
+                    BitMap.INSTANCE.unset(id);
+                }else {
+                    AssistTable.INSTANCE.index.remove(id);
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args){
+        String s = "first_name:2:0|NULL||last_name:2:0|NULL||sex:2:0|NULL|女|score:1:0|NULL||score2:1:0|NULL||";
+        System.out.println("NULL|first_name:2:0||NULL|last_name:2:0||NULL|sex:2:0||NULL|score:1:0||NULL|score2:1:0|NULL|".getBytes().length);
+        System.out.println(s.getBytes().length);
+        System.out.println("id:1:1|3213720|NULL|first_name:2:0|郑|NULL|last_name:2:0|吴|NULL|sex:2:0|男|NULL|score:1:0|207|NULL|".length());
+    }
+}
